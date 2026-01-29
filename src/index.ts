@@ -24,7 +24,7 @@ export type Token = { release(): void };
 
 export type TryAcquireResult =
   | { ok: true; token: Token }
-  | { ok: false; reason: 'concurrency_limit' | 'queue_limit' };
+  | { ok: false; reason: 'concurrency_limit' };
 
 export type AcquireResult =
   | { ok: true; token: Token }
@@ -33,6 +33,7 @@ export type AcquireResult =
 type Waiter = {
   resolve: (r: AcquireResult) => void;
   cancelled: boolean;
+  settled: boolean;
 
   abortListener: (() => void) | undefined;
   timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -72,7 +73,29 @@ export function createBulkhead(opts: BulkheadOptions) {
   let rejected = 0;
   let doubleRelease = 0;
 
-  const pendingCount = () => q.length - qHead;
+  const pruneHead = () => {
+    // Advance past already-cancelled/settled waiters so they don't count against maxQueue.
+    while (qHead < q.length) {
+      const w = q[qHead]!;
+      if (w.cancelled || w.settled) {
+        cleanupWaiter(w);
+        qHead++;
+        continue;
+      }
+      break;
+    }
+
+    // occasional compaction to avoid unbounded growth
+    if (qHead > 1024 && qHead * 2 > q.length) {
+      q.splice(0, qHead);
+      qHead = 0;
+    }
+  };
+
+  const pendingCount = () => {
+    pruneHead();
+    return q.length - qHead;
+  };
 
   // ---- token factory ----
   const makeToken = (): Token => {
@@ -98,26 +121,33 @@ export function createBulkhead(opts: BulkheadOptions) {
     w.timeoutId = undefined;
   };
 
+  const settle = (w: Waiter, r: AcquireResult) => {
+    if (w.settled) return;
+    w.settled = true;
+    // Once settled, it's effectively cancelled for drain-skipping purposes.
+    // (We keep cancelled separate because drain checks it.)
+    if (!w.cancelled && !r.ok) w.cancelled = true;
+    cleanupWaiter(w);
+    w.resolve(r);
+  };
+
   // ---- drain algorithm ----
   const drain = () => {
+    // Important: prune even when there's no capacity, so cancelled/settled
+    // waiters stop consuming maxQueue immediately.
+    pruneHead();
+
     while (inFlight < opts.maxConcurrent && pendingCount() > 0) {
       const w = q[qHead++]!;
       // skip cancelled waiters
-      if (w.cancelled) {
+      if (w.cancelled || w.settled) {
         cleanupWaiter(w);
         continue;
       }
 
       // grant slot
       inFlight++;
-      cleanupWaiter(w);
-      w.resolve({ ok: true, token: makeToken() });
-    }
-
-    // occasional compaction to avoid unbounded growth
-    if (qHead > 1024 && qHead * 2 > q.length) {
-      q.splice(0, qHead);
-      qHead = 0;
+      settle(w, { ok: true, token: makeToken() });
     }
   };
 
@@ -128,13 +158,7 @@ export function createBulkhead(opts: BulkheadOptions) {
       inFlight++;
       return { ok: true, token: makeToken() };
     }
-    // tryAcquire never waits; queue_limit matters only if maxQueue configured
-    if (maxQueue > 0 && pendingCount() >= maxQueue) {
-      rejected++;
-      return { ok: false, reason: 'queue_limit' };
-    }
-    rejected++;
-    return { ok: false, reason: maxQueue > 0 ? 'queue_limit' : 'concurrency_limit' };
+    return { ok: false, reason: 'concurrency_limit' };
   };
 
   const acquire = (ao: AcquireOptions = {}): Promise<AcquireResult> => {
@@ -161,6 +185,7 @@ export function createBulkhead(opts: BulkheadOptions) {
       const w: Waiter = {
         resolve,
         cancelled: false,
+        settled: false,
         abortListener: undefined,
         timeoutId: undefined,
       };
@@ -169,18 +194,16 @@ export function createBulkhead(opts: BulkheadOptions) {
       if (ao.signal) {
         if (ao.signal.aborted) {
           aborted++;
-          resolve({ ok: false, reason: 'aborted' });
+          settle(w, { ok: false, reason: 'aborted' });
           return;
         }
         const onAbort = () => {
           // mark cancelled; drain() will skip it
-          if (!w.cancelled) {
-            w.cancelled = true;
-            aborted++;
-            cleanupWaiter(w);
-            resolve({ ok: false, reason: 'aborted' });
-          }
+          aborted++;
+          w.cancelled = true;
+          settle(w, { ok: false, reason: 'aborted' });
         };
+
         ao.signal.addEventListener('abort', onAbort, { once: true });
         w.abortListener = () => ao.signal!.removeEventListener('abort', onAbort);
       }
@@ -190,25 +213,18 @@ export function createBulkhead(opts: BulkheadOptions) {
         if (!Number.isFinite(ao.timeoutMs) || ao.timeoutMs < 0) {
           // invalid => treat as immediate timeout
           timedOut++;
-          resolve({ ok: false, reason: 'timeout' });
+          settle(w, { ok: false, reason: 'timeout' });
           return;
         }
         w.timeoutId = setTimeout(() => {
-          if (!w.cancelled) {
-            w.cancelled = true;
-            timedOut++;
-            cleanupWaiter(w);
-            resolve({ ok: false, reason: 'timeout' });
-          }
+          timedOut++;
+          w.cancelled = true;
+          settle(w, { ok: false, reason: 'timeout' });
         }, ao.timeoutMs);
       }
 
       q.push(w);
-      // NOTE: we do NOT reserve capacity here.
-      // A slot is consumed only when drain() grants a token.
-
-      // No need to call drain() here because we already know we’re at capacity,
-      // but it doesn’t hurt if you want (for races with release).
+      drain(); // required: capacity may have freed after the fast-path check but before enqueue
     });
   };
 

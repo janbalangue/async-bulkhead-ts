@@ -7,14 +7,35 @@ and adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.2.1] - 2026-01-29
+
+### Changed
+
+* Tightened `tryAcquire()` semantics: it is now strictly non-blocking and never enqueues. A failed `tryAcquire()` always reports `concurrency_limit`.
+* Hardened the `acquire()` waiting path to guarantee pending requests settle exactly once under abort, timeout, and release races.
+* TypeScript types for `tryAcquire()` were tightened to remove queue-related failure reasons that could not occur.
+
+### Documentation
+
+* Corrected documentation to align with actual behavior of `tryAcquire()` (removed implication of queue-related failures).
+* Clarified the distinction between `tryAcquire()` (immediate, non-blocking) and `acquire()` (may wait, bounded by `maxQueue`).
+
+### Design Notes
+
+* No new features 
+* Behavior is unchanged aside from clarified `tryAcquire()` semantics and stronger internal invariants.
+
+---
+
 ## [0.2.0] – 2026-01-26
+
+> Note: The v0.2.0 API evolved during development; some early design concepts
+> described here were simplified or removed before the final release.
 
 ### Added
 
-* `bulkhead.run(fn)` convenience helper to safely wrap async work with automatic `admit()` / `release()` handling
+* `bulkhead.run(fn)` convenience helper to safely wrap async work with automatic acquire / release handling
 * Optional AbortSignal support to allow callers to cancel queued or in-flight work
-* Structured lifecycle hooks for lightweight metrics integration (admit, queue, start, release, reject)
-* Explicit error types for admission failures to improve observability and control-flow clarity
 * Additional stress and soak tests covering cancellation and helper APIs
 
 ### Changed
@@ -25,7 +46,6 @@ and adheres to [Semantic Versioning](https://semver.org/).
 
 ### Breaking Changes
 
-* `admit()` failure reasons are now typed as structured errors instead of plain strings
 * Queue behavior now guarantees FIFO ordering when maxQueue is enabled
 
 ### Design Notes
@@ -41,7 +61,7 @@ and adheres to [Semantic Versioning](https://semver.org/).
 * Fail-fast admission control for async workloads
 * Simple bulkhead with configurable `maxConcurrent`
 * Optional bounded queue via `maxQueue`
-* Explicit `admit()` / `release()` lifecycle
+* Explicit admission and release lifecycle
 * Accurate runtime stats (`inFlight`, `queued`, limits)
 * ESM and CommonJS builds
 * Full TypeScript typings

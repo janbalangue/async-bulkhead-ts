@@ -1,19 +1,19 @@
 # async-bulkhead-ts
 
-Fail-fast **admission control** and **bulkheads** for async workloads in Node.js.
+Fail-fast **admission control** (async bulkheads) for Node.js / TypeScript.
 
-Designed for services that prefer **rejecting work early** over queueing and degrading under load.
+Designed for services that prefer **rejecting work early** over silently degrading via growing queues and timeouts.
 
 ---
 
 ## Features
 
-- ✅ **Fail-fast by default** (no hidden queues)
-- ✅ Simple **bulkhead / concurrency limits**
-- ✅ Explicit admission + release lifecycle
-- ✅ `bulkhead.run(fn)` helper for safe execution
-- ✅ Optional cancellation via `AbortSignal`
-- ✅ Lightweight lifecycle hooks for metrics
+- ✅ Hard **max in-flight** concurrency (`maxConcurrent`)
+- ✅ Optional **bounded FIFO waiting** (`maxQueue`)
+- ✅ **Fail-fast by default** (`maxQueue: 0`)
+- ✅ Explicit acquire + release via a **token**
+- ✅ `bulkhead.run(fn)` helper (acquire + `finally` release)
+- ✅ Optional waiting **timeout** and **AbortSignal** cancellation
 - ✅ Zero dependencies
 - ✅ ESM + CJS support
 - ✅ Node.js **20+**
@@ -22,7 +22,6 @@ Non-goals (by design):
 - ❌ No background workers
 - ❌ No retry logic
 - ❌ No distributed coordination
-- ❌ No built-in metrics backend (hooks only)
 
 ---
 
@@ -32,49 +31,55 @@ Non-goals (by design):
 npm install async-bulkhead-ts
 ```
 
-## Basic Usage (Manual)
+## Basic Usage (Manual acquire/release)
 
 ```ts
 import { createBulkhead } from 'async-bulkhead-ts';
 
-const bulkhead = createBulkhead({ maxConcurrent: 10 });
-const admission = bulkhead.admit();
+const bulkhead = createBulkhead({
+  maxConcurrent: 10,
+});
 
-if (!admission.ok) {
+const r = await bulkhead.acquire();
+
+if (!r.ok) {
   // Fail fast — shed load, return 503, etc.
-  throw admission.error;
+  // r.reason is one of:
+  // 'concurrency_limit' | 'queue_limit' | 'timeout' | 'aborted'
+  throw new Error(`Rejected: ${r.reason}`);
 }
 
 try {
   await doWork();
 } finally {
-  admission.release();
+  r.token.release();
 }
 ```
 
-You must call `release()` exactly once if admission succeeds.
-Failing to release permanently reduces capacity.
+You must call `token.release()` exactly once if acquisition succeeds.
+Failing to release permanently reduces available capacity.
 
 ## Convenience Helper
 
 For most use cases, prefer `bulkhead.run(fn)`:
 
 ```ts
-await bulkhead.run(async () => {
-  await doWork();
-});
+await bulkhead.run(async () => doWork());
 ```
 
 Behavior:
 
-* Admission + release handled automatically
-* Still fail-fast
-* Admission failures throw typed errors
-* Supports cancellation via AbortSignal
+- Acquire + release handled automatically (finally release)
+- Still fail-fast (unless you configure `maxQueue`)
+- Rejections throw a typed `BulkheadRejectedError` when using `run()`
+- The provided `AbortSignal` is passed through to the function
+- Supports waiting cancellation via `AbortSignal` and `timeoutMs`
+
+> The signal passed to `run()` only affects admission and observation; in-flight work is not forcibly cancelled.
 
 ## With a Queue (Optional)
 
-Queues are opt-in and bounded.
+Waiting is opt-in and bounded (FIFO).
 
 ```ts
 const bulkhead = createBulkhead({
@@ -83,28 +88,32 @@ const bulkhead = createBulkhead({
 });
 ```
 
-When both concurrency and queue limits are exceeded, admission fails immediately.
-
-Queue ordering is FIFO.
+Semantics:
+- If `inFlight` < `maxConcurrent`: `acquire()` succeeds immediately.
+- Else if `maxQueue` > 0 and queue has space: `acquire()` waits FIFO.
+- Else: rejected immediately.
 
 ## Cancellation
 
-Bulkhead operations can be bound to an `AbortSignal`:
+Waiting can be cancelled with an `AbortSignal`:
 
 ```ts
 await bulkhead.run(
-  async () => {
-    await doWork();
-  },
+  async () => doWork(),
   { signal }
 );
 ```
 
 Cancellation guarantees:
+- Work that is waiting in the queue can be cancelled before it starts.
+- In-flight work is not forcibly terminated (your function may observe the signal).
+- Capacity is always released correctly for acquired tokens.
 
-* Queued work can be cancelled before execution
-* In-flight work observes the signal but is not forcibly terminated
-* Capacity is always released correctly
+You can also bound waiting time:
+
+```ts
+await bulkhead.run(async () => doWork(), { timeoutMs: 50 });
+```
 
 ## API
 
@@ -113,7 +122,7 @@ Cancellation guarantees:
 ```ts
 type BulkheadOptions = {
   maxConcurrent: number;
-  maxQueue?: number;
+  maxQueue?: number; // pending waiters allowed (0 => no waiting)
 };
 ```
 
@@ -121,38 +130,62 @@ Returns:
 
 ```ts
 {
-  admit(): AdmitResult;
-  run<T>(fn: () => Promise<T>, options?): Promise<T>;
+  tryAcquire(): TryAcquireResult;
+  acquire(options?): Promise<AcquireResult>;
+  run<T>(fn: (signal?: AbortSignal) => Promise<T>, options?): Promise<T>;
   stats(): {
     inFlight: number;
-    queued: number;
+    pending: number;
     maxConcurrent: number;
     maxQueue: number;
+    aborted?: number;
+    timedOut?: number;
+    rejected?: number;
+    doubleRelease?: number;
   };
 }
 ```
 
-`admit()`
+`tryAcquire()`
 
 ```ts
-type AdmitResult =
-  | { ok: true; release: () => void }
-  | { ok: false; error: BulkheadError };
+export type TryAcquireResult =
+  | { ok: true; token: Token }
+  | { ok: false; reason: 'concurrency_limit' };
 ```
 
-Admission failures are returned as typed errors, not strings.
+> `tryAcquire()` never waits and never enqueues; it either acquires immediately or fails fast.
 
-## Metrics Hooks
+`acquire(options?)`
 
-Optional lifecycle hooks allow integration with metrics systems:
+```ts
+type AcquireOptions = {
+  signal?: AbortSignal;
+  timeoutMs?: number; // waiting timeout only
+};
 
-* admission accepted
-* queued
-* execution started
-* released
-* rejected
+type AcquireResult =
+  | { ok: true; token: Token }
+  | { ok: false; reason: 'concurrency_limit' | 'queue_limit' | 'timeout' | 'aborted' };
+```
 
-Hooks are synchronous and side-effect–free by design.
+`run(fn, options?)`
+
+Throws on rejection:
+
+```ts
+class BulkheadRejectedError extends Error {
+  readonly code = 'BULKHEAD_REJECTED';
+  readonly reason: 'concurrency_limit' | 'queue_limit' | 'timeout' | 'aborted';
+}
+```
+
+The function passed to `run()` receives the same `AbortSignal` (if provided), allowing
+in-flight work to observe cancellation:
+
+```ts
+await bulkhead.run(async (signal) => doWork(signal), { signal });
+```
 
 ## Design Philosophy
 
@@ -170,6 +203,7 @@ If you need retries, buffering, scheduling, or persistence—compose those aroun
 
 * Node.js: 20+ (24 LTS recommended)
 * Module formats: ESM and CommonJS
+
 
 ## License
 

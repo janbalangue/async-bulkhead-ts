@@ -23,7 +23,7 @@ async function isSettled(p: Promise<unknown>, withinMs = 5) {
   return settled;
 }
 
-describe("async-bulkhead-ts v0.2.0", () => {
+describe("async-bulkhead-ts v0.2.1", () => {
   it("tryAcquire admits up to maxConcurrent", () => {
     const bulkhead = createBulkhead({ maxConcurrent: 2 });
 
@@ -36,12 +36,25 @@ describe("async-bulkhead-ts v0.2.0", () => {
     expect(c.ok).toBe(false);
 
     if (!c.ok) {
-      // tryAcquire never waits; with no queue configured, this is a concurrency-limit rejection
+      // tryAcquire never waits; a rejection is always concurrency-limit
       expect(c.reason).toBe("concurrency_limit");
     }
 
     if (a.ok) a.token.release();
     if (b.ok) b.token.release();
+  });
+
+  it("tryAcquire ignores maxQueue and still fails with concurrency_limit when full", () => {
+    const bulkhead = createBulkhead({ maxConcurrent: 1, maxQueue: 10 });
+
+    const a = bulkhead.tryAcquire();
+    expect(a.ok).toBe(true);
+
+    const b = bulkhead.tryAcquire();
+    expect(b.ok).toBe(false);
+    if (!b.ok) expect(b.reason).toBe("concurrency_limit");
+
+    if (a.ok) a.token.release();
   });
 
   it("restores capacity on release", () => {
@@ -240,7 +253,7 @@ describe("async-bulkhead-ts v0.2.0", () => {
   });
 });
 
-describe("async-bulkhead-ts v0.2.0 stress", () => {
+describe("async-bulkhead-ts v0.2.1 stress", () => {
   it(
     "soak: inFlight/pending never exceed limits; system drains to zero",
     { timeout: 30_000 },
