@@ -88,6 +88,10 @@ const bulkhead = createBulkhead({
 });
 ```
 
+> Note: bounded waiting is optional.
+> Future major versions may focus on fail-fast admission only.
+
+
 Semantics:
 - If `inFlight` < `maxConcurrent`: `acquire()` succeeds immediately.
 - Else if `maxQueue` > 0 and queue has space: `acquire()` waits FIFO.
@@ -108,12 +112,21 @@ Cancellation guarantees:
 - Work that is waiting in the queue can be cancelled before it starts.
 - In-flight work is not forcibly terminated (your function may observe the signal).
 - Capacity is always released correctly for acquired tokens.
+- Cancelled or timed-out waiters do not permanently consume queue capacity.
+- Cancelled waiters will not block subsequent admissions.
+- FIFO order is preserved for non-cancelled waiters.
 
 You can also bound waiting time:
 
 ```ts
 await bulkhead.run(async () => doWork(), { timeoutMs: 50 });
 ```
+
+## Behavioral Guarantees
+
+- maxConcurrent is never exceeded.
+- pending never exceeds maxQueue.
+- Under cancellation or timeout churn, admission remains bounded and deterministic.
 
 ## API
 

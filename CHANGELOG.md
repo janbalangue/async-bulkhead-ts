@@ -7,6 +7,27 @@ and adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.2.2] - 2026-02-20
+
+### Changed
+
+* Internal pending queue replaced with a ring-buffer deque to avoid O(n) operations under contention.
+* Cancelled / timed-out waiters are pruned from the front of the queue to prevent queue-slot leaks and head-of-line blocking.
+* Admission drain path hardened to skip cancelled waiters deterministically.
+
+### Tests
+
+* Expanded race coverage for abort/timeout vs release ordering.
+* Added stress/soak coverage to validate `maxConcurrent` / `maxQueue` invariants under churn.
+
+### Design Notes
+
+* No public API changes.
+* Behavioral intent unchanged: FIFO waiting remains bounded by `maxQueue`.
+* Queueing remains opt-in; the long-term direction favors fail-fast admission.
+
+---
+
 ## [0.2.1] - 2026-01-29
 
 ### Changed
@@ -53,6 +74,8 @@ and adheres to [Semantic Versioning](https://semver.org/).
 * Helpers remain optional: the core fail-fast admission model is unchanged
 * No retries, scheduling, or background workers were added
 * Metrics hooks are synchronous and side-effect–free by design
+
+---
 
 ## [0.1.0] – 2026-01-23
 

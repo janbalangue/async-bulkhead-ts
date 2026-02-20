@@ -1,3 +1,56 @@
+/**
+ * A small ring-buffer queue.
+ * - O(1) pushBack / popFront
+ * - avoids array shift and head-index + compaction heuristics 
+ */
+class RingDeque<T> {
+  private buf: Array<T | undefined>;
+  private head = 0;
+  private tail = 0;
+  private size = 0;
+
+  constructor(capacity: number) {
+    const cap = Math.max(4, capacity | 0);
+    this.buf = new Array<T | undefined>(cap);
+  }
+
+  get length() {
+    return this.size;
+  }
+
+  pushBack(item: T) {
+    if (this.size === this.buf.length) {
+      this.grow();
+    }
+    const idx = (this.head + this.size) % this.buf.length;
+    this.buf[idx] = item;
+    this.size++;
+  }
+
+  peekFront(): T | undefined {
+    if (this.size === 0) return undefined;
+    return this.buf[this.head];
+  }
+
+  popFront(): T | undefined {
+    if (this.size === 0) return undefined;
+    const item = this.buf[this.head];
+    this.buf[this.head] = undefined; // help GC
+    this.head = (this.head + 1) % this.buf.length;
+    this.size--;
+    return item;
+  }
+
+  private grow() {
+    const newBuf = new Array<T | undefined>(this.buf.length * 2);
+    for (let i = 0; i < this.size; i++) {
+      newBuf[i] = this.buf[(this.head + i) % this.buf.length];
+    }
+    this.buf = newBuf;
+    this.head = 0;
+  }
+}
+
 export type BulkheadOptions = {
   maxConcurrent: number;
   maxQueue?: number; // pending waiters allowed (0 => no waiting)
@@ -63,39 +116,14 @@ export function createBulkhead(opts: BulkheadOptions) {
   // ---- state ----
   let inFlight = 0;
 
-  // FIFO queue as array with head index (cheap shift)
-  const q: Waiter[] = [];
-  let qHead = 0;
+  // FIFO queue as deque (no head index, just pushBack / popFront)
+  const q = new RingDeque<Waiter>(maxQueue + 1); // +1 to avoid full queue edge case
 
   // optional counters
   let aborted = 0;
   let timedOut = 0;
   let rejected = 0;
   let doubleRelease = 0;
-
-  const pruneHead = () => {
-    // Advance past already-cancelled/settled waiters so they don't count against maxQueue.
-    while (qHead < q.length) {
-      const w = q[qHead]!;
-      if (w.cancelled || w.settled) {
-        cleanupWaiter(w);
-        qHead++;
-        continue;
-      }
-      break;
-    }
-
-    // occasional compaction to avoid unbounded growth
-    if (qHead > 1024 && qHead * 2 > q.length) {
-      q.splice(0, qHead);
-      qHead = 0;
-    }
-  };
-
-  const pendingCount = () => {
-    pruneHead();
-    return q.length - qHead;
-  };
 
   // ---- token factory ----
   const makeToken = (): Token => {
@@ -113,6 +141,25 @@ export function createBulkhead(opts: BulkheadOptions) {
       },
     };
   };
+
+  const pruneCancelledFront = () => {
+    // Remove cancelled/settled waiters at the front so they stop consuming maxQueue.
+    while (q.length > 0) {
+      const w = q.peekFront()!;
+      if (w.cancelled || w.settled) {
+        cleanupWaiter(w);
+        q.popFront();
+        continue;
+      } else {
+        break;
+      }
+    }
+  }
+
+  const pendingCount = () => {
+    pruneCancelledFront();
+    return q.length;
+  }
 
   const cleanupWaiter = (w: Waiter) => {
     if (w.abortListener) w.abortListener();
@@ -133,19 +180,16 @@ export function createBulkhead(opts: BulkheadOptions) {
 
   // ---- drain algorithm ----
   const drain = () => {
-    // Important: prune even when there's no capacity, so cancelled/settled
-    // waiters stop consuming maxQueue immediately.
-    pruneHead();
-
-    while (inFlight < opts.maxConcurrent && pendingCount() > 0) {
-      const w = q[qHead++]!;
-      // skip cancelled waiters
-      if (w.cancelled || w.settled) {
+    // Prune first so cancelled/settled waiters don't block the head.
+    pruneCancelledFront();
+    while (inFlight < opts.maxConcurrent && q.length > 0) {
+      const w = q.popFront()!; 
+      // If it was cancelled after peek/prune but before pop, skip it.
+      if (w.cancelled) {
         cleanupWaiter(w);
+        pruneCancelledFront(); // in case there are more cancelled after this one
         continue;
       }
-
-      // grant slot
       inFlight++;
       settle(w, { ok: true, token: makeToken() });
     }
@@ -223,7 +267,7 @@ export function createBulkhead(opts: BulkheadOptions) {
         }, ao.timeoutMs);
       }
 
-      q.push(w);
+      q.pushBack(w);
       drain(); // required: capacity may have freed after the fast-path check but before enqueue
     });
   };
