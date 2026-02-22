@@ -7,6 +7,26 @@ and adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.2.3] - 2026-02-22
+
+### Security
+
+* Patched a transitive vulnerability in `minimatch` by pinning to ^10.2.1 via overrides.
+* Patched a transitive vulnerability in `ajv` by pinning to ^8.17.1 via overrides.
+
+### Changed
+
+* Added explicit overrides in `package.json` to enforce secure dependency resolution.
+* No runtime or public API changes.
+
+### Design Notes
+
+* This release contains dependency security updates only.
+* No behavioral changes to bulkhead semantics, queueing, or concurrency limits.
+* Fully backward compatible.
+
+---
+
 ## [0.2.2] - 2026-02-20
 
 ### Changed
