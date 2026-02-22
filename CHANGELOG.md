@@ -11,8 +11,8 @@ and adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security
 
-* Patched a transitive vulnerability in `minimatch` by pinning to ^10.2.1 via overrides.
-* Patched a transitive vulnerability in `ajv` by pinning to ^8.17.1 via overrides.
+* Patched a transitive vulnerability in `minimatch` by pinning to ^10.2.1 via npm `overrides`.
+* Patched a transitive vulnerability in `ajv` (used by ESLint tooling) by pinning to ^6.12.6 via scoped npm `overrides`.
 
 ### Changed
 

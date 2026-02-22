@@ -3,7 +3,9 @@
   "version": "0.2.3",
   "overrides": {
     "minimatch": "^10.2.1",
-    "ajv": "^8.17.1"
+    "@eslint/eslintrc": {
+      "ajv": "^6.12.6"
+    }
   },
   "description": "Fail-fast admission control + bulkheads for async workloads",
   "license": "MIT",
