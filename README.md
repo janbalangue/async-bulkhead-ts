@@ -14,11 +14,13 @@ Designed for services that prefer **rejecting work early** over silently degradi
 - ✅ Explicit acquire + release via a **token**
 - ✅ `bulkhead.run(fn)` helper (acquire + `finally` release)
 - ✅ Optional waiting **timeout** and **AbortSignal** cancellation
+- ✅ Graceful shutdown via **`close()`** + **`drain()`**
 - ✅ Zero dependencies
 - ✅ ESM + CJS support
 - ✅ Node.js **20+**
 
 Non-goals (by design):
+
 - ❌ No background workers
 - ❌ No retry logic
 - ❌ No distributed coordination
@@ -45,7 +47,7 @@ const r = await bulkhead.acquire();
 if (!r.ok) {
   // Fail fast — shed load, return 503, etc.
   // r.reason is one of:
-  // 'concurrency_limit' | 'queue_limit' | 'timeout' | 'aborted'
+  // 'concurrency_limit' | 'queue_limit' | 'timeout' | 'aborted' | 'shutdown'
   throw new Error(`Rejected: ${r.reason}`);
 }
 
@@ -91,8 +93,8 @@ const bulkhead = createBulkhead({
 > Note: bounded waiting is optional.
 > Future major versions may focus on fail-fast admission only.
 
-
 Semantics:
+
 - If `inFlight` < `maxConcurrent`: `acquire()` succeeds immediately.
 - Else if `maxQueue` > 0 and queue has space: `acquire()` waits FIFO.
 - Else: rejected immediately.
@@ -109,6 +111,7 @@ await bulkhead.run(
 ```
 
 Cancellation guarantees:
+
 - Work that is waiting in the queue can be cancelled before it starts.
 - In-flight work is not forcibly terminated (your function may observe the signal).
 - Capacity is always released correctly for acquired tokens.
@@ -120,6 +123,33 @@ You can also bound waiting time:
 
 ```ts
 await bulkhead.run(async () => doWork(), { timeoutMs: 50 });
+```
+
+## Graceful Shutdown
+
+`close()` stops admission. `drain()` waits for in-flight work to finish. Together they give you a clean shutdown sequence:
+
+```ts
+// In your SIGTERM handler:
+bulkhead.close();
+
+// All pending waiters are rejected with 'shutdown'.
+// All future acquire/run calls reject immediately with 'shutdown'.
+// In-flight work is not interrupted — tokens release normally.
+
+await bulkhead.drain();
+// Resolves when inFlight reaches zero.
+```
+
+`close()` is synchronous, idempotent, and irreversible. If you need a fresh bulkhead, create a new instance.
+
+`drain()` is an observation primitive — it tells you when work finishes, but it cannot force work to complete. The bulkhead does not own in-flight work. If your functions support cancellation, signal them via the `AbortSignal` you already hold.
+
+`drain()` also works without `close()`. On its own it resolves when current in-flight and pending work completes, but new work can still be admitted:
+
+```ts
+// Wait for current work to finish, without stopping new admissions.
+await bulkhead.drain();
 ```
 
 ## Behavioral Guarantees
@@ -146,16 +176,9 @@ Returns:
   tryAcquire(): TryAcquireResult;
   acquire(options?): Promise<AcquireResult>;
   run<T>(fn: (signal?: AbortSignal) => Promise<T>, options?): Promise<T>;
-  stats(): {
-    inFlight: number;
-    pending: number;
-    maxConcurrent: number;
-    maxQueue: number;
-    aborted?: number;
-    timedOut?: number;
-    rejected?: number;
-    doubleRelease?: number;
-  };
+  close(): void;
+  drain(): Promise<void>;
+  stats(): Stats;
 }
 ```
 
@@ -164,7 +187,7 @@ Returns:
 ```ts
 export type TryAcquireResult =
   | { ok: true; token: Token }
-  | { ok: false; reason: 'concurrency_limit' };
+  | { ok: false; reason: 'concurrency_limit' | 'shutdown' };
 ```
 
 > `tryAcquire()` never waits and never enqueues; it either acquires immediately or fails fast.
@@ -179,7 +202,14 @@ type AcquireOptions = {
 
 type AcquireResult =
   | { ok: true; token: Token }
-  | { ok: false; reason: 'concurrency_limit' | 'queue_limit' | 'timeout' | 'aborted' };
+  | { ok: false; reason: RejectReason };
+
+type RejectReason =
+  | 'concurrency_limit'
+  | 'queue_limit'
+  | 'timeout'
+  | 'aborted'
+  | 'shutdown';
 ```
 
 `run(fn, options?)`
@@ -189,7 +219,7 @@ Throws on rejection:
 ```ts
 class BulkheadRejectedError extends Error {
   readonly code = 'BULKHEAD_REJECTED';
-  readonly reason: 'concurrency_limit' | 'queue_limit' | 'timeout' | 'aborted';
+  readonly reason: RejectReason;
 }
 ```
 
@@ -200,22 +230,52 @@ in-flight work to observe cancellation:
 await bulkhead.run(async (signal) => doWork(signal), { signal });
 ```
 
+`close()`
+
+Stops admission permanently. Rejects all pending waiters with `'shutdown'`. All future `tryAcquire`/`acquire`/`run` calls reject immediately with `'shutdown'`. In-flight tokens remain valid. Idempotent.
+
+`drain()`
+
+Returns a `Promise<void>` that resolves when `inFlight` and pending both reach zero. Multiple concurrent calls all resolve at the same moment. Works with or without `close()`.
+
+`stats()`
+
+```ts
+type Stats = {
+  inFlight: number;
+  pending: number;
+  maxConcurrent: number;
+  maxQueue: number;
+  closed: boolean;
+  // debug counters:
+  aborted?: number;
+  timedOut?: number;
+  rejected?: number;
+  doubleRelease?: number;
+  inFlightUnderflow?: number;
+};
+```
+
+`stats()` is a pure read with no side effects.
+
+`inFlightUnderflow` should always be 0. A nonzero value indicates a bug in the library.
+
 ## Design Philosophy
 
 This library is intentionally small.
 
 It exists to enforce backpressure at the boundary of your system:
 
-* before request fan-out
-* before hitting downstream dependencies
-* before saturation cascades
+- before request fan-out
+- before hitting downstream dependencies
+- before saturation cascades
 
 If you need retries, buffering, scheduling, or persistence—compose those around this, not inside it.
 
 ## Compatibility
 
-* Node.js: 20+ (24 LTS recommended)
-* Module formats: ESM and CommonJS
+- Node.js: 20+ (24 LTS recommended)
+- Module formats: ESM and CommonJS
 
 
 ## License

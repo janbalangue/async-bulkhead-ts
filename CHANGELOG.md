@@ -7,6 +7,40 @@ and adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.3.0] - 2026-02-26
+
+### Added
+
+* `close()` — stops admission permanently. All pending waiters are rejected with `'shutdown'`; all future `tryAcquire`/`acquire`/`run` calls reject immediately. In-flight work is not interrupted — tokens remain valid and release normally. Idempotent and synchronous.
+* `drain()` — returns a `Promise<void>` that resolves when `inFlight` and pending both reach zero. Works independently of `close()`. Compose as `close()` → `drain()` for graceful shutdown.
+* `'shutdown'` added to `RejectReason` union. Flows through `BulkheadRejectedError` without breaking existing switch/match consumers.
+* `closed` field on `Stats`.
+* `inFlightUnderflow` counter on `Stats` — observable counter that increments if `inFlight` ever goes negative (should always be 0; nonzero indicates a bug). Replaces the previous silent clamp.
+
+### Changed
+
+* `stats()` is now a pure read. Previously it called `pruneCancelledFront()` internally, mutating the queue on every read. Pending count is now tracked via a `livePending` counter maintained on enqueue and settle. The queue is only pruned during the admission pump.
+* Internal `drain` function renamed to `pump`. The internal function that admits waiters from the queue is now `pump()`, freeing `drain` for the public API.
+* Redundant pump-on-enqueue removed. The unconditional `drain()` call at the end of the `acquire` promise constructor is replaced with a guarded check, avoiding a full queue walk when concurrency is known to be saturated.
+
+### Tests
+
+* `close()`: rejects pending waiters, rejects future admission, does not cancel in-flight work, cleans up abort listeners and timeouts, idempotent.
+* `drain()`: resolves immediately when empty, resolves on last release, multiple callers all resolve, works without `close()`, waits for pending→admitted work.
+* `close()` + `drain()` composition: graceful shutdown pattern, drain-then-close ordering, close with nothing in-flight.
+* Mass abort: 100 simultaneous aborts, system drains cleanly, no ghost waiters.
+* Soak with mid-run close/drain: invariants hold under churn when shutdown fires during active traffic.
+* `stats()` purity: repeated calls return identical results with no side effects.
+
+### Design Notes
+
+* `close()` is irreversible — a closed bulkhead stays closed. Create a new instance if you need a fresh one.
+* `drain()` is an observation primitive, not a cancellation primitive. The bulkhead does not own in-flight work and cannot force it to complete.
+* Fully backward compatible for existing consumers. The new `'shutdown'` reason is additive — existing code that doesn't match on it will simply never see it unless `close()` is called.
+
+---
+
+
 ## [0.2.3] - 2026-02-22
 
 ### Security

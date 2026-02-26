@@ -1,7 +1,7 @@
 /**
  * A small ring-buffer queue.
  * - O(1) pushBack / popFront
- * - avoids array shift and head-index + compaction heuristics 
+ * - avoids array shift and head-index + compaction heuristics
  */
 class RingDeque<T> {
   private buf: Array<T | undefined>;
@@ -66,22 +66,24 @@ export type Stats = {
   pending: number;
   maxConcurrent: number;
   maxQueue: number;
+  closed: boolean;
   // optional debug counters:
   aborted?: number;
   timedOut?: number;
   rejected?: number;
   doubleRelease?: number;
+  inFlightUnderflow?: number;
 };
 
 export type Token = { release(): void };
 
 export type TryAcquireResult =
   | { ok: true; token: Token }
-  | { ok: false; reason: 'concurrency_limit' };
+  | { ok: false; reason: 'concurrency_limit' | 'shutdown' };
 
 export type AcquireResult =
   | { ok: true; token: Token }
-  | { ok: false; reason: 'concurrency_limit' | 'queue_limit' | 'timeout' | 'aborted' };
+  | { ok: false; reason: RejectReason };
 
 type Waiter = {
   resolve: (r: AcquireResult) => void;
@@ -92,7 +94,12 @@ type Waiter = {
   timeoutId: ReturnType<typeof setTimeout> | undefined;
 };
 
-export type RejectReason = 'concurrency_limit' | 'queue_limit' | 'timeout' | 'aborted';
+export type RejectReason =
+  | 'concurrency_limit'
+  | 'queue_limit'
+  | 'timeout'
+  | 'aborted'
+  | 'shutdown';
 
 export class BulkheadRejectedError extends Error {
   readonly code = 'BULKHEAD_REJECTED' as const;
@@ -115,51 +122,29 @@ export function createBulkhead(opts: BulkheadOptions) {
 
   // ---- state ----
   let inFlight = 0;
+  let closed = false;
+
+  // Live pending count — the number of waiters in the queue that have not
+  // been settled (admitted, cancelled, timed out, or aborted). Tracked
+  // separately from `q.length` so that `stats()` is a pure read — the
+  // queue may contain stale (cancelled/settled) entries that haven't been
+  // pruned yet, but `livePending` is always accurate.
+  let livePending = 0;
 
   // FIFO queue as deque (no head index, just pushBack / popFront)
   const q = new RingDeque<Waiter>(maxQueue + 1); // +1 to avoid full queue edge case
+
+  // Drain waiters — resolve functions for pending drain() promises.
+  let drainWaiters: Array<() => void> = [];
 
   // optional counters
   let aborted = 0;
   let timedOut = 0;
   let rejected = 0;
   let doubleRelease = 0;
+  let inFlightUnderflow = 0;
 
-  // ---- token factory ----
-  const makeToken = (): Token => {
-    let released = false;
-    return {
-      release() {
-        if (released) {
-          doubleRelease++;
-          return; // idempotent; consider throw in dev builds if you prefer
-        }
-        released = true;
-        inFlight--;
-        if (inFlight < 0) inFlight = 0; // defensive, should never happen
-        drain();
-      },
-    };
-  };
-
-  const pruneCancelledFront = () => {
-    // Remove cancelled/settled waiters at the front so they stop consuming maxQueue.
-    while (q.length > 0) {
-      const w = q.peekFront()!;
-      if (w.cancelled || w.settled) {
-        cleanupWaiter(w);
-        q.popFront();
-        continue;
-      } else {
-        break;
-      }
-    }
-  }
-
-  const pendingCount = () => {
-    pruneCancelledFront();
-    return q.length;
-  }
+  // ---- internal helpers ----
 
   const cleanupWaiter = (w: Waiter) => {
     if (w.abortListener) w.abortListener();
@@ -171,23 +156,66 @@ export function createBulkhead(opts: BulkheadOptions) {
   const settle = (w: Waiter, r: AcquireResult) => {
     if (w.settled) return;
     w.settled = true;
-    // Once settled, it's effectively cancelled for drain-skipping purposes.
-    // (We keep cancelled separate because drain checks it.)
+    // Once settled, it's effectively cancelled for pump-skipping purposes.
     if (!w.cancelled && !r.ok) w.cancelled = true;
     cleanupWaiter(w);
+    livePending--;
     w.resolve(r);
   };
 
-  // ---- drain algorithm ----
-  const drain = () => {
-    // Prune first so cancelled/settled waiters don't block the head.
+  /**
+   * Remove cancelled/settled waiters from the front of the queue so the
+   * deque doesn't accumulate stale entries. Called from pump() and
+   * release paths — never from stats().
+   */
+  const pruneCancelledFront = () => {
+    while (q.length > 0) {
+      const w = q.peekFront()!;
+      if (w.cancelled || w.settled) {
+        q.popFront();
+        continue;
+      }
+      break;
+    }
+  };
+
+  /** Notify drain() waiters if inFlight has reached zero. */
+  const notifyDrainWaiters = () => {
+    if (inFlight === 0 && livePending === 0 && drainWaiters.length > 0) {
+      const waiters = drainWaiters;
+      drainWaiters = [];
+      for (const resolve of waiters) resolve();
+    }
+  };
+
+  // ---- token factory ----
+  const makeToken = (): Token => {
+    let released = false;
+    return {
+      release() {
+        if (released) {
+          doubleRelease++;
+          return;
+        }
+        released = true;
+        inFlight--;
+        if (inFlight < 0) {
+          inFlightUnderflow++;
+          inFlight = 0;
+        }
+        pump();
+        notifyDrainWaiters();
+      },
+    };
+  };
+
+  // ---- pump: admit waiters from the queue when capacity frees ----
+  const pump = () => {
     pruneCancelledFront();
     while (inFlight < opts.maxConcurrent && q.length > 0) {
-      const w = q.popFront()!; 
-      // If it was cancelled after peek/prune but before pop, skip it.
-      if (w.cancelled) {
-        cleanupWaiter(w);
-        pruneCancelledFront(); // in case there are more cancelled after this one
+      const w = q.popFront()!;
+      if (w.cancelled || w.settled) {
+        pruneCancelledFront();
         continue;
       }
       inFlight++;
@@ -195,9 +223,37 @@ export function createBulkhead(opts: BulkheadOptions) {
     }
   };
 
+  // ---- close(): reject all pending, block future admission ----
+  const close = (): void => {
+    if (closed) return;
+    closed = true;
+
+    // Reject all pending waiters.
+    while (q.length > 0) {
+      const w = q.popFront()!;
+      if (w.settled || w.cancelled) continue;
+      rejected++;
+      settle(w, { ok: false, reason: 'shutdown' });
+    }
+
+    // If nothing is in-flight, notify drain waiters immediately.
+    notifyDrainWaiters();
+  };
+
+  // ---- drain(): wait for inFlight to reach zero ----
+  const drainFn = (): Promise<void> => {
+    if (inFlight === 0 && livePending === 0) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      drainWaiters.push(resolve);
+    });
+  };
+
   // ---- public APIs ----
 
   const tryAcquire = (): TryAcquireResult => {
+    if (closed) {
+      return { ok: false, reason: 'shutdown' };
+    }
     if (inFlight < opts.maxConcurrent) {
       inFlight++;
       return { ok: true, token: makeToken() };
@@ -206,6 +262,12 @@ export function createBulkhead(opts: BulkheadOptions) {
   };
 
   const acquire = (ao: AcquireOptions = {}): Promise<AcquireResult> => {
+    // closed fast path
+    if (closed) {
+      rejected++;
+      return Promise.resolve({ ok: false, reason: 'shutdown' });
+    }
+
     // immediate fast path
     if (inFlight < opts.maxConcurrent) {
       inFlight++;
@@ -219,7 +281,7 @@ export function createBulkhead(opts: BulkheadOptions) {
     }
 
     // bounded waiting
-    if (pendingCount() >= maxQueue) {
+    if (livePending >= maxQueue) {
       rejected++;
       return Promise.resolve({ ok: false, reason: 'queue_limit' });
     }
@@ -234,6 +296,8 @@ export function createBulkhead(opts: BulkheadOptions) {
         timeoutId: undefined,
       };
 
+      livePending++;
+
       // abort support
       if (ao.signal) {
         if (ao.signal.aborted) {
@@ -242,7 +306,6 @@ export function createBulkhead(opts: BulkheadOptions) {
           return;
         }
         const onAbort = () => {
-          // mark cancelled; drain() will skip it
           aborted++;
           w.cancelled = true;
           settle(w, { ok: false, reason: 'aborted' });
@@ -255,7 +318,6 @@ export function createBulkhead(opts: BulkheadOptions) {
       // timeout support (waiting only)
       if (ao.timeoutMs != null) {
         if (!Number.isFinite(ao.timeoutMs) || ao.timeoutMs < 0) {
-          // invalid => treat as immediate timeout
           timedOut++;
           settle(w, { ok: false, reason: 'timeout' });
           return;
@@ -268,7 +330,10 @@ export function createBulkhead(opts: BulkheadOptions) {
       }
 
       q.pushBack(w);
-      drain(); // required: capacity may have freed after the fast-path check but before enqueue
+      // Capacity may have freed after the fast-path check but before enqueue.
+      if (inFlight < opts.maxConcurrent) {
+        pump();
+      }
     });
   };
 
@@ -289,14 +354,16 @@ export function createBulkhead(opts: BulkheadOptions) {
 
   const stats = (): Stats => ({
     inFlight,
-    pending: pendingCount(),
+    pending: livePending,
     maxConcurrent: opts.maxConcurrent,
     maxQueue,
+    closed,
     aborted,
     timedOut,
     rejected,
     doubleRelease,
+    inFlightUnderflow,
   });
 
-  return { tryAcquire, acquire, run, stats };
+  return { tryAcquire, acquire, run, stats, close, drain: drainFn };
 }
