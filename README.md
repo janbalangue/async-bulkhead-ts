@@ -7,10 +7,11 @@ It is designed for:
 
 * APIs and services where latency SLOs matter more than throughput
 * Systems where queue growth = failure mode
-* Boundaries before:
+* Boundaries such as:
   * LLM calls
   * DB / downstream dependencies
-fan-out or parallel work
+  * request fan-out
+  * parallel work
 
 It is not:
 
@@ -23,29 +24,29 @@ It is not:
 
 ## Features
 
-- ✅ Hard **max in-flight** concurrency (`maxConcurrent`)
-- ✅ Optional **bounded FIFO waiting** (`maxQueue`)
-- ✅ **Fail-fast by default** (`maxQueue: 0`)
-- ✅ Explicit acquire + release via a **token**
-- ✅ `bulkhead.run(fn)` helper (acquire + `finally` release)
-- ✅ Optional waiting **timeout** and **AbortSignal** cancellation
-- ✅ Graceful shutdown via **`close()`** + **`drain()`**
-- ✅ Zero dependencies
-- ✅ ESM + CJS support
-- ✅ Node.js **20+**
+* ✅ Hard **max in-flight** concurrency (`maxConcurrent`)
+* ✅ Optional **bounded FIFO waiting** (`maxQueue`)
+* ✅ **Fail-fast by default** (`maxQueue: 0`)
+* ✅ Explicit acquire + release via a **token**
+* ✅ `bulkhead.run(fn)` helper (acquire + `finally` release)
+* ✅ Optional waiting **timeout** and **AbortSignal** cancellation
+* ✅ Graceful shutdown via **`close()`** + **`drain()`**
+* ✅ Zero dependencies
+* ✅ ESM + CJS support
+* ✅ Node.js **20+**
 
 Non-goals (by design):
 
-- ❌ No background workers
-- ❌ No retry logic
-- ❌ No distributed coordination
+* ❌ No background workers
+* ❌ No retry logic
+* ❌ No distributed coordination
 
 ---
 
 ## Competitive Matrix
 
 | Capability / Library | async-bulkhead-ts | p-limit | p-queue | Bottleneck | cockatiel / polly |
-|---------------------|------------------|--------|--------|------------|-------------------|
+| ------------------- | ----------------- | ------- | ------- | ---------- | ------------------ |
 | **Primary goal** | Admission control | Concurrency limit | Task queue | Scheduler + rate limit | Full resilience |
 | **Fail-fast by default** | ✅ Yes | ❌ No | ❌ No | ❌ No | ⚠️ Depends |
 | **Bounded queue (optional)** | ✅ Yes | ❌ No | ✅ Yes | ✅ Yes | ⚠️ Indirect |
@@ -62,10 +63,10 @@ Non-goals (by design):
 
 ### Quick positioning
 
-- **p-limit** → simple concurrency limiting  
-- **p-queue / Bottleneck** → queueing + scheduling  
-- **cockatiel / polly** → full resilience (retries, breakers, etc.)  
-- **async-bulkhead-ts** → **fail-fast admission control (protect latency under load)**
+* **p-limit** → simple concurrency limiting  
+* **p-queue / Bottleneck** → queueing + scheduling  
+* **cockatiel / polly** → full resilience (retries, breakers, etc.)  
+* **async-bulkhead-ts** → **fail-fast admission control (protect latency under load)**
 
 ---
 
@@ -120,11 +121,11 @@ await bulkhead.run(async () => doWork());
 
 Behavior:
 
-- Acquire + release handled automatically (finally release)
-- Still fail-fast (unless you configure `maxQueue`)
-- Rejections throw a typed `BulkheadRejectedError` when using `run()`
-- The provided `AbortSignal` is passed through to the function
-- Supports waiting cancellation via `AbortSignal` and `timeoutMs`
+* Acquire + release handled automatically (finally release)
+* Still fail-fast (unless you configure `maxQueue`)
+* Rejections throw a typed `BulkheadRejectedError` when using `run()`
+* The provided `AbortSignal` is passed through to the function
+* Supports waiting cancellation via `AbortSignal` and `timeoutMs`
 
 > The signal passed to `run()` only affects admission and observation; in-flight work is not forcibly cancelled.
 
@@ -144,9 +145,9 @@ const bulkhead = createBulkhead({
 
 Semantics:
 
-- If `inFlight` < `maxConcurrent`: `acquire()` succeeds immediately.
-- Else if `maxQueue` > 0 and queue has space: `acquire()` waits FIFO.
-- Else: rejected immediately.
+* If `inFlight` < `maxConcurrent`: `acquire()` succeeds immediately.
+* Else if `maxQueue` > 0 and queue has space: `acquire()` waits FIFO.
+* Else: rejected immediately.
 
 ## Cancellation
 
@@ -161,12 +162,12 @@ await bulkhead.run(
 
 Cancellation guarantees:
 
-- Work that is waiting in the queue can be cancelled before it starts.
-- In-flight work is not forcibly terminated (your function may observe the signal).
-- Capacity is always released correctly for acquired tokens.
-- Cancelled or timed-out waiters do not permanently consume queue capacity.
-- Cancelled waiters will not block subsequent admissions.
-- FIFO order is preserved for non-cancelled waiters.
+* Work that is waiting in the queue can be cancelled before it starts.
+* In-flight work is not forcibly terminated (your function may observe the signal).
+* Capacity is always released correctly for acquired tokens.
+* Cancelled or timed-out waiters do not permanently consume queue capacity.
+* Cancelled waiters will not block subsequent admissions.
+* FIFO order is preserved for non-cancelled waiters.
 
 You can also bound waiting time:
 
@@ -176,7 +177,11 @@ await bulkhead.run(async () => doWork(), { timeoutMs: 50 });
 
 ## Graceful Shutdown
 
-`close()` stops admission. `drain()` waits for in-flight work to finish. Together they give you a clean shutdown sequence:
+`close()` stops new admissions and rejects all pending waiters with `'shutdown'`.
+`drain()` resolves when the bulkhead becomes fully idle:
+
+* `inFlight === 0`
+* `pending === 0`
 
 ```ts
 // In your SIGTERM handler:
@@ -185,16 +190,14 @@ bulkhead.close();
 // All pending waiters are rejected with 'shutdown'.
 // All future acquire/run calls reject immediately with 'shutdown'.
 // In-flight work is not interrupted — tokens release normally.
-
 await bulkhead.drain();
-// Resolves when inFlight reaches zero.
 ```
 
 `close()` is synchronous, idempotent, and irreversible. If you need a fresh bulkhead, create a new instance.
 
 `drain()` is an observation primitive — it tells you when work finishes, but it cannot force work to complete. The bulkhead does not own in-flight work. If your functions support cancellation, signal them via the `AbortSignal` you already hold.
 
-`drain()` also works without `close()`. On its own it resolves when current in-flight and pending work completes, but new work can still be admitted:
+`drain()` also works without `close()`. It resolves when current in-flight and pending work completes, but it does not prevent future admissions once it has resolved:
 
 ```ts
 // Wait for current work to finish, without stopping new admissions.
@@ -203,9 +206,9 @@ await bulkhead.drain();
 
 ## Behavioral Guarantees
 
-- maxConcurrent is never exceeded.
-- pending never exceeds maxQueue.
-- Under cancellation or timeout churn, admission remains bounded and deterministic.
+* maxConcurrent is never exceeded.
+* pending never exceeds maxQueue.
+* Under cancellation or timeout churn, admission remains bounded and deterministic.
 
 ## API
 
@@ -315,18 +318,17 @@ This library is intentionally small.
 
 It exists to enforce backpressure at the boundary of your system:
 
-- before request fan-out
-- before hitting downstream dependencies
-- before saturation cascades
+* before request fan-out
+* before hitting downstream dependencies
+* before saturation cascades
 
 If you need retries, buffering, scheduling, or persistence—compose those around this, not inside it.
 
 ## Compatibility
 
-- Node.js: 20+ (24 LTS recommended)
-- Module formats: ESM and CommonJS
-
+* Node.js: 20+ (24 LTS recommended)
+* Module formats: ESM and CommonJS
 
 ## License
 
-MIT © 2026
+Apache-2.0 © 2026 Jan Balangue

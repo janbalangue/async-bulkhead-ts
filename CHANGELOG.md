@@ -7,6 +7,26 @@ and adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.3.1] - 2026-04-13
+
+### Changed
+
+* Updated package metadata to reflect the current release line.
+* License changed from MIT to Apache-2.0.
+
+### Documentation
+
+* Updated README to document the current public API, including `close()`, `drain()`, `shutdown`, `closed`, and `inFlightUnderflow`.
+* Clarified graceful shutdown behavior and `drain()` semantics.
+* Aligned README examples and API docs with the current implementation.
+
+### Notes
+
+* No runtime behavior changes.
+* This release aligns documentation, package metadata, and licensing with the already-published v0.3.0 feature set.
+
+---
+
 ## [0.3.0] - 2026-02-26
 
 ### Added
@@ -40,13 +60,12 @@ and adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
-
 ## [0.2.3] - 2026-02-22
 
 ### Security
 
-* Patched a transitive vulnerability in `minimatch` by pinning to ^10.2.1 via npm `overrides`.
-* Patched a transitive vulnerability in `ajv` (used by ESLint tooling) by pinning to ^6.12.6 via scoped npm `overrides`.
+* Patched a transitive vulnerability in `minimatch` by pinning to 10.2.1 via npm `overrides`.
+* Patched a transitive vulnerability in `ajv` (used by ESLint tooling) by pinning to 6.12.6 via scoped npm `overrides`.
 
 ### Changed
 
