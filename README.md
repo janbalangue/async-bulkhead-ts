@@ -1,8 +1,23 @@
 # async-bulkhead-ts
 
-Fail-fast **admission control** (async bulkheads) for Node.js / TypeScript.
+`async-bulkhead-ts` is a minimal, explicit bulkhead primitive for Node.js:
+it enforces hard concurrency limits, optionally allows bounded waiting, and makes overload visible via immediate rejection—not latency.
 
-Designed for services that prefer **rejecting work early** over silently degrading via growing queues and timeouts.
+It is designed for:
+
+* APIs and services where latency SLOs matter more than throughput
+* Systems where queue growth = failure mode
+* Boundaries before:
+  * LLM calls
+  * DB / downstream dependencies
+fan-out or parallel work
+
+It is not:
+
+* a scheduler
+* a retry framework
+* a background worker
+* a resilience “kitchen sink”
 
 ---
 
@@ -24,6 +39,40 @@ Non-goals (by design):
 - ❌ No background workers
 - ❌ No retry logic
 - ❌ No distributed coordination
+
+---
+
+## Competitive Matrix
+
+| Capability / Library | async-bulkhead-ts | p-limit | p-queue | Bottleneck | cockatiel / polly |
+|---------------------|------------------|--------|--------|------------|-------------------|
+| **Primary goal** | Admission control | Concurrency limit | Task queue | Scheduler + rate limit | Full resilience |
+| **Fail-fast by default** | ✅ Yes | ❌ No | ❌ No | ❌ No | ⚠️ Depends |
+| **Bounded queue (optional)** | ✅ Yes | ❌ No | ✅ Yes | ✅ Yes | ⚠️ Indirect |
+| **Reject reason (typed)** | ✅ Yes | ❌ No | ❌ No | ❌ No | ⚠️ Mixed |
+| **Explicit acquire/release** | ✅ Yes | ❌ No | ❌ No | ❌ No | ❌ No |
+| **Abort / timeout (admission)** | ✅ Yes | ❌ No | ⚠️ Partial | ⚠️ Partial | ✅ Yes |
+| **No hidden work accumulation** | ✅ Yes | ❌ No | ❌ No | ❌ No | ⚠️ Depends |
+| **Designed for overload visibility** | ✅ Core feature | ❌ No | ❌ No | ❌ No | ⚠️ Indirect |
+| **Retries / fallback** | ❌ No | ❌ No | ❌ No | ❌ No | ✅ Yes |
+| **Scheduling / prioritization** | ❌ No | ❌ No | ✅ Yes | ✅ Yes | ❌ No |
+| **Operational stats (in-flight, pending)** | ✅ Yes | ❌ No | ⚠️ Limited | ⚠️ Limited | ⚠️ Limited |
+
+---
+
+### Quick positioning
+
+- **p-limit** → simple concurrency limiting  
+- **p-queue / Bottleneck** → queueing + scheduling  
+- **cockatiel / polly** → full resilience (retries, breakers, etc.)  
+- **async-bulkhead-ts** → **fail-fast admission control (protect latency under load)**
+
+---
+
+### Rule of thumb
+
+> If you want to *process everything eventually*, use a queue.  
+> If you want to *protect your system under overload*, use a bulkhead.
 
 ---
 
