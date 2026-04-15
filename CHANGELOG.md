@@ -7,6 +7,24 @@ and adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.4.1] - 2026-04-15
+
+### Documentation
+
+* Corrected the `BulkheadOptions` API docs in the README to include:
+  * `name?: string`
+  * `hooks?: BulkheadHooks`
+* Clarified hook timing semantics in the README.
+* Documented `onRelease` as a post-release/post-pump snapshot: if a queued waiter is admitted immediately, the hook may observe `inFlight` already refilled and `pending` already reduced.
+
+### Notes
+
+* No runtime behavior changes.
+* No public API changes.
+* This release aligns README documentation with the published `0.4.0` implementation.
+
+---
+
 ## [0.4.0] - 2026-04-15
 
 ### Added

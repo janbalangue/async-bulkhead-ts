@@ -208,6 +208,10 @@ Hook semantics:
 * Hooks should be fast and non-blocking.
 * Hook exceptions are swallowed and counted in stats().hookErrors.
 * Hooks observe admission state; they do not participate in scheduling or cancellation.
+* `onAcquireSuccess` observes state after admission succeeds.
+* `onReject` observes state after the rejection has been recorded.
+* `onRelease` observes state after release processing completes. If a queued waiter is admitted immediately, the hook may see `inFlight` already refilled and `pending` already reduced.
+* `onClose` observes state after the bulkhead is marked closed and pending waiters have been rejected.
 
 ## Graceful Shutdown
 
@@ -252,6 +256,8 @@ await bulkhead.drain();
 type BulkheadOptions = {
   maxConcurrent: number;
   maxQueue?: number; // pending waiters allowed (0 => no waiting)
+  name?: string;
+  hooks?: BulkheadHooks;
 };
 ```
 
