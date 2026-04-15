@@ -7,6 +7,48 @@ and adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.4.0] - 2026-04-15
+
+### Added
+
+* Optional `name` field on `BulkheadOptions` for bulkhead identification in logs and metrics.
+* Optional synchronous instrumentation hooks on `BulkheadOptions`:
+  * `onAcquireSuccess`
+  * `onReject`
+  * `onRelease`
+  * `onClose`
+* Operational counters on `stats()`:
+  * `totalAdmitted`
+  * `totalReleased`
+  * `rejectedByReason`
+  * `hookErrors`
+
+### Changed
+
+* `stats()` now serves as an operational telemetry surface in addition to debug observation.
+* Hook exceptions are swallowed and counted in `hookErrors` so instrumentation cannot corrupt bulkhead state.
+* Removed an unused internal deque field.
+
+### Documentation
+
+* Added instrumentation examples and hook semantics to the README.
+* Clarified that hooks are synchronous, best-effort, and should remain fast/non-blocking.
+
+### Tests
+
+* Added coverage for hook firing order and state snapshots.
+* Added coverage for `totalAdmitted`, `totalReleased`, and `rejectedByReason`.
+* Added coverage proving hook exceptions do not corrupt state and are counted in `hookErrors`.
+
+### Notes
+
+* No change to core admission semantics.
+* `tryAcquire()` remains non-blocking.
+* `acquire()` remains bounded-wait or fail-fast depending on `maxQueue`.
+* `close()` / `drain()` semantics are unchanged.
+
+---
+
 ## [0.3.1] - 2026-04-13
 
 ### Changed

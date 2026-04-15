@@ -1047,3 +1047,98 @@ describe('soak', () => {
     },
   );
 });
+
+// ============================================================
+// v0.4.0: hooks + operational counters
+// ============================================================
+
+describe('hooks + operational counters', () => {
+  it('fires acquire/reject/release/close hooks with snapshots in order', () => {
+    const events: Array<unknown[]> = [];
+
+    const bulkhead = createBulkhead({
+      name: 'test-bulkhead',
+      maxConcurrent: 1,
+      hooks: {
+        onAcquireSuccess: (e) =>
+          events.push(['acquire', e.name, e.inFlight, e.pending, e.closed]),
+        onReject: (e) =>
+          events.push(['reject', e.reason, e.inFlight, e.pending, e.closed]),
+        onRelease: (e) =>
+          events.push(['release', e.inFlight, e.pending, e.closed]),
+        onClose: (e) =>
+          events.push(['close', e.inFlight, e.pending, e.closed]),
+      },
+    });
+
+    const a = bulkhead.tryAcquire();
+    expect(a.ok).toBe(true);
+
+    const b = bulkhead.tryAcquire();
+    expect(b.ok).toBe(false);
+    if (!b.ok) expect(b.reason).toBe('concurrency_limit');
+
+    if (a.ok) a.token.release();
+    bulkhead.close();
+
+    expect(events).toEqual([
+      ['acquire', 'test-bulkhead', 1, 0, false],
+      ['reject', 'concurrency_limit', 1, 0, false],
+      ['release', 0, 0, false],
+      ['close', 0, 0, true],
+    ]);
+  });
+
+  it('tracks totalAdmitted/totalReleased/rejectedByReason', async () => {
+    const bulkhead = createBulkhead({ maxConcurrent: 1, maxQueue: 1 });
+
+    const a = bulkhead.tryAcquire();
+    expect(a.ok).toBe(true);
+
+    const ac = new AbortController();
+    const bP = bulkhead.acquire({ signal: ac.signal });
+    ac.abort();
+
+    const b = await bP;
+    expect(b.ok).toBe(false);
+    if (!b.ok) expect(b.reason).toBe('aborted');
+
+    if (a.ok) a.token.release();
+
+    const s = bulkhead.stats();
+    expect(s.totalAdmitted).toBe(1);
+    expect(s.totalReleased).toBe(1);
+    expect(s.rejected).toBe(1);
+    expect(s.rejectedByReason?.aborted).toBe(1);
+    expect(s.aborted).toBe(1);
+  });
+
+  it('swallows hook exceptions and counts hookErrors', () => {
+    const bulkhead = createBulkhead({
+      maxConcurrent: 1,
+      hooks: {
+        onAcquireSuccess: () => {
+          throw new Error('boom');
+        },
+        onReject: () => {
+          throw new Error('boom');
+        },
+        onRelease: () => {
+          throw new Error('boom');
+        },
+      },
+    });
+
+    const a = bulkhead.tryAcquire();
+    expect(a.ok).toBe(true);
+
+    const b = bulkhead.tryAcquire();
+    expect(b.ok).toBe(false);
+
+    if (a.ok) a.token.release();
+
+    const s = bulkhead.stats();
+    expect(s.inFlight).toBe(0);
+    expect(s.hookErrors).toBe(3);
+  });
+});

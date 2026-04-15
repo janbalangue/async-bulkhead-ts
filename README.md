@@ -31,6 +31,8 @@ It is not:
 * ✅ `bulkhead.run(fn)` helper (acquire + `finally` release)
 * ✅ Optional waiting **timeout** and **AbortSignal** cancellation
 * ✅ Graceful shutdown via **`close()`** + **`drain()`**
+* ✅ Optional synchronous **instrumentation hooks**
+* ✅ Operational counters via **`stats()`**
 * ✅ Zero dependencies
 * ✅ ESM + CJS support
 * ✅ Node.js **20+**
@@ -175,6 +177,38 @@ You can also bound waiting time:
 await bulkhead.run(async () => doWork(), { timeoutMs: 50 });
 ```
 
+## Instrumentation
+
+You can attach optional synchronous hooks for admission, rejection, release, and close events:
+
+```ts
+const bulkhead = createBulkhead({
+  name: 'llm-outbound',
+  maxConcurrent: 8,
+  maxQueue: 0,
+  hooks: {
+    onAcquireSuccess(event) {
+      metrics.counter('bulkhead_admit_total').add(1, {
+        bulkhead: event.name ?? 'unnamed',
+      });
+    },
+    onReject(event) {
+      metrics.counter('bulkhead_reject_total').add(1, {
+        bulkhead: event.name ?? 'unnamed',
+        reason: event.reason,
+      });
+    },
+  },
+});
+```
+
+Hook semantics:
+
+* Hooks are synchronous and best-effort.
+* Hooks should be fast and non-blocking.
+* Hook exceptions are swallowed and counted in stats().hookErrors.
+* Hooks observe admission state; they do not participate in scheduling or cancellation.
+
 ## Graceful Shutdown
 
 `close()` stops new admissions and rejects all pending waiters with `'shutdown'`.
@@ -299,16 +333,21 @@ type Stats = {
   maxConcurrent: number;
   maxQueue: number;
   closed: boolean;
-  // debug counters:
+  totalAdmitted: number;
+  totalReleased: number;  
+  // operational / debug counters:
   aborted?: number;
   timedOut?: number;
   rejected?: number;
+  rejectedByReason?: Partial<Record<RejectReason, number>>;
   doubleRelease?: number;
   inFlightUnderflow?: number;
+  hookErrors?: number;
 };
 ```
 
-`stats()` is a pure read with no side effects.
+`stats()` is a pure read with no side effects. `totalAdmitted`, `totalReleased`,
+and `rejectedByReason` are intended for operational visibility and metrics export.
 
 `inFlightUnderflow` should always be 0. A nonzero value indicates a bug in the library.
 
