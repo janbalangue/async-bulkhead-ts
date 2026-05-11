@@ -18,6 +18,10 @@ and adheres to [Semantic Versioning](https://semver.org/).
 * Added explicit override in `package.json` to enforce secure dependency resolution.
 * No runtime or public API changes.
 
+### Tests
+
+* Fixed untyped `Promise<unknown>[]` in mass-abort stress test; array is now `Promise<AcquireResult>[]` so the loop variable resolves through the discriminated union.
+
 ### Notes
 
 * `postcss` is a transitive dev dependency (build tooling only) and is not present in the published package. This vulnerability does not affect consumers at runtime.
