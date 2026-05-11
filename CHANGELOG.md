@@ -7,6 +7,24 @@ and adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.4.2] - 2026-05-11
+
+### Security
+
+* Patched a transitive vulnerability in `postcss` (via `tsup`) by pinning to ^8.5.10 via npm `overrides`. See [GHSA-qx2v-qp2m-jg93](https://github.com/advisories/GHSA-qx2v-qp2m-jg93).
+
+### Changed
+
+* Added explicit override in `package.json` to enforce secure dependency resolution.
+* No runtime or public API changes.
+
+### Notes
+
+* `postcss` is a transitive dev dependency (build tooling only) and is not present in the published package. This vulnerability does not affect consumers at runtime.
+* Fully backward compatible.
+
+---
+
 ## [0.4.1] - 2026-04-15
 
 ### Documentation
