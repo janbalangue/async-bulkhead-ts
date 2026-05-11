@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createBulkhead, BulkheadRejectedError } from '../src/index';
+import { createBulkhead, BulkheadRejectedError, AcquireResult } from '../src/index';
 
 function sleep(ms: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -841,7 +841,7 @@ describe('mass-abort stress', () => {
     expect(a.ok).toBe(true);
 
     const controllers: AbortController[] = [];
-    const promises: Promise<unknown>[] = [];
+    const promises: Promise<AcquireResult>[] = [];
 
     for (let i = 0; i < 100; i++) {
       const ac = new AbortController();
