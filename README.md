@@ -142,8 +142,10 @@ const bulkhead = createBulkhead({
 });
 ```
 
-> Note: bounded waiting is optional.
-> Future major versions may focus on fail-fast admission only.
+> Note: bounded waiting is optional, and **fail-fast is the default** (`maxQueue: 0`).
+> The bounded queue is a **stable, opt-in** part of the v1 API. `maxConcurrent`,
+> `maxQueue`, and `timeoutMs` are covered by SemVer and will not be removed or
+> renamed within the 1.x line.
 
 Semantics:
 
@@ -368,6 +370,23 @@ It exists to enforce backpressure at the boundary of your system:
 * before saturation cascades
 
 If you need retries, buffering, scheduling, or persistence—compose those around this, not inside it.
+
+## Stability
+
+`async-bulkhead-ts` follows [Semantic Versioning](https://semver.org/).
+As of **1.0.0**, the following are the stable public API and will not change
+incompatibly within the 1.x line:
+
+* **Factory:** `createBulkhead(options)`
+* **Instance methods:** `tryAcquire()`, `acquire()`, `run()`, `close()`, `drain()`, `stats()`
+* **Options:** `maxConcurrent`, `maxQueue`, `timeoutMs`, `name`, `hooks`
+* **Reject reasons:** `'concurrency_limit' | 'queue_limit' | 'timeout' | 'aborted' | 'shutdown'`
+* **Error:** `BulkheadRejectedError` (`.code === 'BULKHEAD_REJECTED'`, `.reason`)
+
+Fail-fast admission is the default. The bounded FIFO queue (`maxQueue` > 0,
+optionally with `timeoutMs`) is a **stable, opt-in** capability — not a
+deprecated one. Additive changes (new optional fields, new stats counters)
+may ship in minor releases; removals or renames of the above require a major.
 
 ## Compatibility
 

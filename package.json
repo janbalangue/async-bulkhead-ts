@@ -1,6 +1,6 @@
 {
   "name": "async-bulkhead-ts",
-  "version": "0.4.2",
+  "version": "1.0.0",
   "overrides": {
     "minimatch": "^10.2.1",
     "@eslint/eslintrc": {
