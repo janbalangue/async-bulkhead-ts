@@ -7,6 +7,32 @@ and adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.0.1] - 2026-07-29
+
+No runtime or API change. The published `dist/` output is byte-identical to
+`1.0.0`; this release exists only because the `package.json` fix below ships
+inside the package tarball and npm versions are immutable.
+
+### Fixed
+
+- Changed the `test` script from `vitest` to `vitest run`. Vitest enters watch
+  mode when stdout is a TTY, so `prepublishOnly` (`npm run test && npm run
+  build`) hung indefinitely when `npm publish` was invoked from an interactive
+  terminal and never reached the build step. Non-TTY contexts such as CI were
+  unaffected, which is why the defect was not visible in automated runs.
+
+### Added
+
+- Added a `test:watch` script preserving the previous watch-mode behavior under
+  an explicit name.
+
+### Changed
+
+- Extended the CI matrix to Node 24 alongside 20 and 22, matching
+  `async-bulkhead-llm`. Lint, tests, build, and pack pass on all three.
+
+---
+
 ## [1.0.0] - 2026-07-14
 
 First stable release. This is an **API-stability commitment**, not a feature

@@ -1,6 +1,6 @@
 {
   "name": "async-bulkhead-ts",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "overrides": {
     "minimatch": "^10.2.1",
     "@eslint/eslintrc": {
@@ -32,7 +32,8 @@
   },
   "scripts": {
     "build": "tsup",
-    "test": "vitest",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "lint": "eslint .",
     "prepublishOnly": "npm run test && npm run build"
   },
