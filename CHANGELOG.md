@@ -7,6 +7,17 @@ and adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.0.2] - 2026-08-01
+
+### Changed
+
+- Extended the CI matrix to Node 24 alongside 20 and 22. This was written up
+  as part of 1.0.1 (see below) but the corresponding `ci.yml` change was
+  never committed, so 1.0.1's CI actually only ran on 20 and 22. Lint, tests,
+  build, and pack pass on all three versions now.
+
+---
+
 ## [1.0.1] - 2026-07-29
 
 No runtime or API change. The published `dist/` output is byte-identical to
